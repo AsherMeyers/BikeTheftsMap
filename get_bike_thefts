@@ -1,0 +1,75 @@
+import requests
+import geopandas as gpd
+import pandas as pd
+from geopy.geocoders import Nominatim
+from shapely.geometry import Point
+
+# Function: reverse geocode geometries
+def reverse_geocode(geometry, address_keys = address_keys):
+    geo = geolocator.reverse((geometry.y, geometry.x), exactly_one=True)
+    if geo != None:
+        address = geo.raw['address']
+        return geometry, address.get(keys[0]), address.get(keys[1]), address.get(keys[2]), address.get(keys[3])
+        #address = geolocator.reverse((geometry.y, geometry.x), exactly_one=True).raw['address']
+#     except:
+#         print()
+    #return geometry,[address.get(key) for key in address_keys]
+    else: 
+        return geometry, None, None, None, None,
+
+# Download the GeoJSON file
+url = "https://files.bikeindex.org/uploads/tsvs/stolen.geojson"
+response = requests.get(url)
+data = response.json()
+
+# Convert to GeoDataFrame
+gdf = gpd.GeoDataFrame.from_features(data["features"])
+
+gdf['latitude'] = gdf['geometry'].y.astype(str)
+gdf['longitude'] = gdf['geometry'].x.astype(str)
+
+#gdf = gdf.drop('geometry', axis = 1)
+gdf = gdf.rename(columns = {'at':'date'})
+
+# Limit data to 2015 onwards
+gdf = gdf[gdf.date >= '2015-01-01']
+
+# All locations
+# Read in CSV of previously reverse-geocoded geometries
+addresses = pd.read_csv("addresses.csv").reset_index(drop = True)
+
+# convert Geometry column to type geometry
+addresses['geometry'] = gpd.GeoSeries.from_wkt(addresses['geometry'])
+
+# Convert geometries array to dataframe
+geometries = pd.DataFrame({'geometry': gdf.geometry.unique()}) 
+
+# Merge geometries dataframe with addresses dataframe, then create new_geometries dataframe
+# to house only geometries that have not already been reverse_geocoded
+geometries = geometries.merge(addresses, on='geometry', how='left')
+new_geometries = geometries[(geometries.country.isna()) & (geometries.state.isna())]
+geolocator = Nominatim(user_agent="my_geocoder")
+
+address_keys = ['town', 'city', 'state', 'country']
+
+# Reverse geocode geometries
+for geometry in new_geometries['geometry']: 
+    addresses = pd.concat([addresses, 
+              pd.DataFrame([reverse_geocode(geometry)],  
+                           columns=['geometry', 'town', 'city', 'state', 'country'] )], axis = 0)
+
+addresses = addresses.drop_duplicates()
+
+# Update addresses registry
+addresses.to_csv("addresses.csv", index = False)
+
+# Read addresses into bike thefts table and clean up names
+df = gdf.merge(addresses, on='geometry', how='left')
+df['city'] = df['city'].fillna(df['town'])
+df = df.drop(columns = ['town'])
+df['city'] = df['city'].str.replace('City of ', '')
+df['city'] = df['city'].str.replace('Town of ', '')
+df['city'] = df['city'].str.replace('Village of ', '')
+
+# Write updated dataframe of bikes stolen
+df.to_csv("bikes_stolen.csv")
